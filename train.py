@@ -7,7 +7,7 @@ import os
 
 batchSize = 32 # look at this many games before updating network
 learningRate = 0.001
-epochs = 10
+epochs = 50
 trueData = "data/trueData"
 modelSavePath = "board2placement.pth"
 
@@ -37,6 +37,10 @@ def train():
     mse = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learningRate)
 
+    # this adjusts learning rate every x epochs
+    # allows for model to settle down
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+
     # training loop
     print("training started!")
     for i in range(epochs):
@@ -58,6 +62,9 @@ def train():
 
             totalTrainingLoss += loss.item()
         
+        # step scheduler
+        scheduler.step()
+        
         # validate epoch
         avgTrainingLoss = totalTrainingLoss / len(trainingLoader)
         model.eval()
@@ -69,6 +76,8 @@ def train():
                 loss2 = mse(guesses2, valTarget)
                 totalValidationLoss += loss2.item()
         avgValidationLoss = totalValidationLoss / len(validationLoader)
+        # if training loss and validation loss are far apart
+        # it is a sign of overfitting
         print(f"Epoch {i + 1} | Training Loss : {avgTrainingLoss} | Validation Loss : {avgValidationLoss}")
     
     # save model

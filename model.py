@@ -12,21 +12,23 @@ class Board2Placement(nn.Module):
         self.itemsCount = len(IDs["itemIDs"])
 
         # embeddings
-        self.unitEmbedding = nn.Embedding(self.unitsCount, 32)
+        self.unitEmbedding = nn.Embedding(self.unitsCount, 64)
         self.itemEmbedding = nn.Embedding(self.itemsCount, 32)
 
         # analyzes individual units
         self.processingLayers = nn.Sequential(
-            nn.Linear(32 * 4 + 1, 64),
+            nn.Linear(64 + 32 * 3 + 1, 128),
             nn.ReLU(),
-            nn.Linear(64, 32),
+            nn.Dropout(0.2), # randomly turn off 20% neurons to prevent overfitting
+            nn.Linear(128, 64),
             nn.ReLU()
         )
         # assesses entire board
         self.outputHead = nn.Sequential(
-            nn.Linear(32, 16),
+            nn.Linear(64, 32),
             nn.ReLU(),
-            nn.Linear(16, 1)
+            nn.Dropout(0.2),
+            nn.Linear(32, 1)
         )
     
     def forward(self, x):
