@@ -28,3 +28,29 @@ class Board2Placement(nn.Module):
             nn.ReLU(),
             nn.Linear(16, 1)
         )
+    
+    def forward(self, x):
+        unitIDs = x[:, :, 0]
+        # not embedded like others so need to pad extra dimension
+        starLevels = x[:, :, 1].unsqueeze(-1).float()
+        item1IDs = x[:, :, 2]
+        item2IDs = x[:, :, 3]
+        item3IDs = x[:, :, 4]
+
+        # get embeddings
+        unitEmbs = self.unitEmbedding(unitIDs)
+        item1Embs = self.itemEmbedding(item1IDs)
+        item2Embs = self.itemEmbedding(item2IDs)
+        item3Embs = self.itemEmbedding(item3IDs)
+
+        # combine units with their items and star level
+        unitProperties = torch.cat([unitEmbs, item1Embs, item2Embs, item3Embs, starLevels], dim=2)
+
+        # process units
+        processedUnits = self.processingLayers(unitProperties)
+
+        # average board into single value
+        boardVector = torch.mean(processedUnits, dim = 1)
+
+        # predict value of board
+        return self.outputHead(boardVector)
