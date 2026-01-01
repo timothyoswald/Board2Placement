@@ -7,9 +7,10 @@ import os
 
 batchSize = 32 # look at this many games before updating network
 learningRate = 0.001
-epochs = 50
-trueData = "data/trueData"
+epochs = 20
+trueData = "data/cleanedData"
 modelSavePath = "board2placement.pth"
+bestValidationLoss = float("inf")
 
 def train():
     # from PyTorch docs
@@ -80,8 +81,10 @@ def train():
         # it is a sign of overfitting
         print(f"Epoch {i + 1} | Training Loss : {avgTrainingLoss} | Validation Loss : {avgValidationLoss}")
     
-    # save model
-    torch.save(model.state_dict(), modelSavePath)
+        # save model only if it got better
+        if avgValidationLoss < bestValidationLoss:
+            bestValidationLoss = avgValidationLoss
+            torch.save(model.state_dict(), modelSavePath)
     print("Training Complete + Model Saved")
 
 train()

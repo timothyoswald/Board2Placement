@@ -2,9 +2,9 @@ import json
 import os
 import torch
 
-dataDir = "data/rawMatches"
-IDsDir = "data/IDs"
-outputDir = "data/trueData"
+dataDir = "data/largeMatchBatch" # where your scraped match data is
+IDsDir = "data/IDs" # help to sort the cleaned data
+outputDir = "data/cleanedData" # where you want the cleaned data to go
 
 def filterData():
     print("started")
@@ -20,6 +20,7 @@ def filterData():
     print("processing boards")
 
     for i in range(len(matches)):
+        print(f"match {i} processing")
         fileName = matches[i]
         with open(os.path.join(dataDir, fileName), "r") as f:
             match = json.load(f)
@@ -39,11 +40,11 @@ def filterData():
                 starLevel = unit["tier"]
                 unitItems = [0, 0, 0]
                 itemNames = unit["itemNames"]
-                for i in range(len(itemNames)):
-                    item = itemNames[i]
+                for j in range(len(itemNames)):
+                    item = itemNames[j]
                     if item not in itemIDs:
                         itemIDs[item] = len(itemIDs)
-                    unitItems[i] = itemIDs[item]
+                    unitItems[j] = itemIDs[item]
                 
                 unitVector = [unitIDs[unitName], starLevel] + unitItems
                 board.append(unitVector)
