@@ -2,108 +2,133 @@ import requests
 import json
 import time
 import os
-from config import API_KEY, REGION_ROUTING, PLATFORM_ROUTING, SLEEP_TIME
+from collections import deque
+from config import API_KEY, REGION_ROUTING, PLATFORM_ROUTING
 
-# Standard headers for Riot API
-HEADERS = {
-    "X-Riot-Token": API_KEY
-}
+HEADER = {"X-Riot-Token": API_KEY}
+matchCount = 10000 # adjust how many matches you want here
+saveDir = "data/largeMatchBatch" # change to your directory
 
-def make_request(url):
-    """
-    Sends a request to Riot API. 
-    Handles 429 (Rate Limit) errors by waiting automatically.
-    """
-    while True:
-        try:
-            response = requests.get(url, headers=HEADERS)
-            
-            if response.status_code == 200:
-                return response.json()
-            
-            elif response.status_code == 429:
-                # We hit the limit. Wait a bit longer than usual.
-                print("⚠️ Rate limit hit! Sleeping for 10 seconds...")
-                time.sleep(10)
-            
-            elif response.status_code == 403:
-                print("❌ API Key Expired or Forbidden! Check config.py")
-                return None
-                
-            else:
-                print(f"❌ Error {response.status_code}: {url}")
-                return None
-                
-        except Exception as e:
-            print(f"Network Error: {e}")
+class LargeScraper():
+    def __init__(self, apiKey, region, platform, saveDir):
+        self.apiKey = apiKey
+        self.region = region
+        self.platform = platform
+        self.saveDir = saveDir
+
+        self.session = requests.Session()
+        self.playerQueue = deque()
+        self.seenPlayers = set()
+        self.seenMatches = set()
+
+        # load existing state if there is one
+        self.loadState()
+
+        if not os.path.exists(saveDir):
+            os.makedirs(saveDir)
+
+    def makeRequest(self, url):
+        while True:
+            try:
+                response = self.session.get(url, headers = HEADER)
+
+                if response.status_code == 200: # successful request
+                    return response.json()
+                elif response.status_code == 429: # too many requests recently, rate limit hit
+                    waitTime = int(response.headers.get("Retry-After", 5))
+                    print(f"rate limit hit: waiting {waitTime} seconds")
+                    time.sleep(waitTime)
+                    continue
+                elif response.status_code == 403: # API key expired
+                    print("api key expired")
+                    exit() # stop running entirely
+                elif response.status_code == 404: # url not found
+                    print("url not found")
+                    return None
+                else:
+                    print(f"response status code: {response.status_code}")
+                    return None
+            except Exception as e:
+                print(f"request failed: {e}")
+                time.sleep(5)
+
+    def getPlayers(self):
+        url = f"https://{self.platform}.api.riotgames.com/tft/league/v1/challenger"
+        data = self.makeRequest(url)
+
+        if not data:
+            print("failed to get challenger players")
             return None
-
-def get_challenger_players():
-    """Step 1: Get list of top players to use as 'seeds'"""
-    print("Fetching Challenger League...")
-    url = f"https://{PLATFORM_ROUTING}.api.riotgames.com/tft/league/v1/challenger"
-    data = make_request(url)
-    if not data: return []
-    return data['entries'] # Returns a list of players
-
-def get_match_ids(puuid, count=10):
-    """Step 3: Get last 10 match IDs for a player"""
-    url = f"https://{REGION_ROUTING}.api.riotgames.com/tft/match/v1/matches/by-puuid/{puuid}/ids?start=0&count={count}"
-    data = make_request(url)
-    time.sleep(SLEEP_TIME)
-    return data if data else []
-
-def save_match_json(match_id):
-    """Step 4: Download and save the match details"""
-    # Check if we already downloaded it to avoid duplicates
-    save_path = f"data/rawMatches/{match_id}.json"
-    if os.path.exists(save_path):
-        print(f"Skipping {match_id} (Already Exists)")
-        return
-
-    url = f"https://{REGION_ROUTING}.api.riotgames.com/tft/match/v1/matches/{match_id}"
-    match_data = make_request(url)
-    
-    if match_data:
-        # Save to file
-        with open(save_path, 'w') as f:
-            json.dump(match_data, f)
-        print(f"✅ Saved {match_id}")
-    
-    time.sleep(SLEEP_TIME)
-
-# --- MAIN EXECUTION LOOP ---
-if __name__ == "__main__":
-    # Ensure data folder exists
-    os.makedirs("data/rawMatches", exist_ok=True)
-
-    print("--- STARTING DATA COLLECTION ---")
-    
-    # 1. Get Seed Players
-    challengers = get_challenger_players()
-    # Let's grab the top 25 players
-    targets = challengers[:25] 
-    
-    print(f"Found {len(targets)} Challenger players. Starting harvest...")
-
-    # 2. Loop through players and find matches
-    unique_match_ids = set()
-    
-    for i, player in enumerate(targets):
-        print(f"Processing Player {i+1}...")
         
-        # Use the PUUID directly provided by the Challenger list
-        puuid = player.get('puuid') 
-        
-        if puuid:
-            matches = get_match_ids(puuid)
-            unique_match_ids.update(matches)
+        entries = data.get("entries", [])
 
-    print(f"\n--- DOWNLOADING {len(unique_match_ids)} MATCHES ---")
+        for entry in entries[:25]:
+            if "puuid" in entry:
+                self.queuePlayer(entry["puuid"])
     
-    # 3. Download all unique matches
-    for i, match_id in enumerate(unique_match_ids):
-        print(f"[{i+1}/{len(unique_match_ids)}] ", end="")
-        save_match_json(match_id)
+    def queuePlayer(self, puuid):
+        if puuid not in self.seenPlayers and puuid not in self.playerQueue:
+            self.playerQueue.append(puuid)
+    
+    def scrape(self):
+        print("starting to scrape")
+        while len(self.seenMatches) < matchCount and self.playerQueue:
+            currentPlayer = self.playerQueue.popleft()
+            self.seenPlayers.add(currentPlayer)
 
-    print("\n--- DONE! ---")
+            matchIDs_url = f"https://{self.region}.api.riotgames.com/tft/match/v1/matches/by-puuid/{currentPlayer}/ids?count=20"
+            matchIDs = self.makeRequest(matchIDs_url)
+
+            if not matchIDs: continue
+
+            for matchID in matchIDs:
+                if matchID in self.seenMatches:
+                    continue
+
+                match_url = f"https://{self.region}.api.riotgames.com/tft/match/v1/matches/{matchID}"
+                matchData = self.makeRequest(match_url)
+
+                if matchData:
+                    self.saveMatch(matchID, matchData)
+                    # grab other players in the match for more data
+                    self.snowballPlayers(matchData)
+                
+            if len(self.seenPlayers) % 10 == 0:
+                self.saveState()
+
+        print(f"done! scraped {len(self.seenMatches)} matches!")
+        
+    def saveMatch(self, matchID, matchData):
+        path = os.path.join(self.saveDir, f"{matchID}.json")
+        with open(path, "w") as f:
+            json.dump(matchData, f)
+        self.seenMatches.add(matchID)
+        print(f"saved match {matchID}. in total {len(self.seenMatches)} matches saved")
+    
+    def snowballPlayers(self, matchData):
+        participants = matchData["metadata"]["participants"]
+        for puuid in participants:
+            self.queuePlayer(puuid)
+    
+    def saveState(self):
+        with open("scraperState.json", "w") as f:
+            json.dump({
+                "seenMatches": list(self.seenMatches),
+                "seenPlayers": list(self.seenPlayers),
+                "playerQueue": list(self.playerQueue)
+            }, f)
+        print("state saved")
+    
+    def loadState(self):
+        if os.path.exists("scraperState.json"):
+            with open("scraperState.json", "r") as f:
+                data = json.load(f)
+                self.seenMatches = set(data["seenMatches"])
+                self.seenPlayers = set(data["seenPlayers"])
+                self.playerQueue = deque(data["playerQueue"])
+            print(f"state resumed with {len(self.seenMatches)} matches")
+
+scraper = LargeScraper(API_KEY, REGION_ROUTING, PLATFORM_ROUTING, saveDir)
+if not scraper.playerQueue:
+    scraper.getPlayers()
+scraper.scrape()

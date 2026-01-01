@@ -1,6 +1,7 @@
 config.py
 data/
 board2placement.pth
+scraperState.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
