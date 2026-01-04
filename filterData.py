@@ -37,6 +37,7 @@ def filterData():
                 if unitName not in unitIDs:
                     unitIDs[unitName] = len(unitIDs)
 
+                unitCost = unit["rarity"] + 1
                 starLevel = unit["tier"]
                 unitItems = [0, 0, 0]
                 itemNames = unit["itemNames"]
@@ -46,13 +47,13 @@ def filterData():
                         itemIDs[item] = len(itemIDs)
                     unitItems[j] = itemIDs[item]
                 
-                unitVector = [unitIDs[unitName], starLevel] + unitItems
+                unitVector = [unitIDs[unitName], unitCost, starLevel] + unitItems
                 board.append(unitVector)
         
             # even with augments/items no board should
             # have more than 14 units
             while len(board) < 14:
-                board.append([0, 0, 0, 0, 0])
+                board.append([0, 0, 0, 0, 0, 0])
             
             # ints for input tensor for indexing
             inputTensor = torch.tensor(board, dtype = torch.long)

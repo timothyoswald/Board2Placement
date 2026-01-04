@@ -35,11 +35,13 @@ class BoardFinder:
             if placement <= 4.0:
                 # extract only units
                 unitIDs = boardTensor[:, 0].tolist()
+                unitCosts = boardTensor[:, 1].tolist()
                 # 1D vector of 1 if unit in board and 0 o.w
                 vector = np.zeros(self.numUnits)
-                for ID in unitIDs:
+                for i in range(len(unitIDs)):
+                    ID = unitIDs[i]
                     if ID != 0:
-                        vector[ID] = 1
+                        vector[ID] = 1 + (unitCosts[i] - 1) * 0.25
                 winningBoards.append(vector)
         self.vectors = np.array(winningBoards)
         print(f"found {len(self.vectors)} winning boards")

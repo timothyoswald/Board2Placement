@@ -17,7 +17,7 @@ class Board2Placement(nn.Module):
 
         # analyzes individual units
         self.processingLayers = nn.Sequential(
-            nn.Linear(64 + 32 * 3 + 1, 128),
+            nn.Linear(64 + 32 * 3 + 1 + 1, 128),
             nn.ReLU(),
             nn.Dropout(0.2), # randomly turn off 20% neurons to prevent overfitting
             nn.Linear(128, 64),
@@ -34,10 +34,11 @@ class Board2Placement(nn.Module):
     def forward(self, x):
         unitIDs = x[:, :, 0]
         # not embedded like others so need to pad extra dimension
-        starLevels = x[:, :, 1].unsqueeze(-1).float()
-        item1IDs = x[:, :, 2]
-        item2IDs = x[:, :, 3]
-        item3IDs = x[:, :, 4]
+        unitCosts = x[:, :, 1].unsqueeze(-1).float()
+        starLevels = x[:, :, 2].unsqueeze(-1).float()
+        item1IDs = x[:, :, 3]
+        item2IDs = x[:, :, 4]
+        item3IDs = x[:, :, 5]
 
         # get embeddings
         unitEmbs = self.unitEmbedding(unitIDs)
@@ -46,7 +47,7 @@ class Board2Placement(nn.Module):
         item3Embs = self.itemEmbedding(item3IDs)
 
         # combine units with their items and star level
-        unitProperties = torch.cat([unitEmbs, item1Embs, item2Embs, item3Embs, starLevels], dim=2)
+        unitProperties = torch.cat([unitEmbs, unitCosts, starLevels, item1Embs, item2Embs, item3Embs], dim=2)
 
         # process units
         processedUnits = self.processingLayers(unitProperties)

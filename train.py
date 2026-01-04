@@ -10,9 +10,9 @@ learningRate = 0.001
 epochs = 20
 trueData = "data/cleanedData"
 modelSavePath = "board2placement.pth"
-bestValidationLoss = float("inf")
 
 def train():
+    bestValidationLoss = float("inf")
     # from PyTorch docs
     device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
     print(f"Using {device} device")
