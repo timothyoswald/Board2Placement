@@ -16,18 +16,20 @@ class BoardFinder:
             self.IDsFile = json.load(f)
             # invert dictionary to map IDs to name
             self.IDtoName = {ID: name for name, ID in self.IDsFile["unitIDs"].items()}
+            self.IDtoItem = {ID: name for name, ID in self.IDsFile["itemIDs"].items()}
             self.numUnits = len(self.IDtoName)
 
         if os.path.exists(modelDir):
-            self.loadModel()
+            self.loadState()
         else:
             self.train()
-            self.saveModel()
+            self.saveState()
     
     def train(self):
         # now load matches and only keep comps that go top 4
         data = torch.load(dataDir)
         winningBoards = []
+        winningBoardsTensors = []
 
         for boardTensor, placementTensor in data:
             placement = placementTensor.item()
@@ -36,13 +38,14 @@ class BoardFinder:
                 # extract only units
                 unitIDs = boardTensor[:, 0].tolist()
                 unitCosts = boardTensor[:, 1].tolist()
-                # 1D vector of 1 if unit in board and 0 o.w
+                # 1D vector of ~unit cost if unit in board and 0 o.w
                 vector = np.zeros(self.numUnits)
                 for i in range(len(unitIDs)):
                     ID = unitIDs[i]
                     if ID != 0:
                         vector[ID] = 1 + (unitCosts[i] - 1) * 0.25
                 winningBoards.append(vector)
+                winningBoardsTensors.append(boardTensor)
         self.vectors = np.array(winningBoards)
         print(f"found {len(self.vectors)} winning boards")
 
@@ -50,6 +53,40 @@ class BoardFinder:
         self.KMeans = KMeans(n_clusters=clusterCount)
         self.KMeans.fit(self.vectors)
         print("found clusters")
+
+        # find item frequencies for each composition
+        print("finding items")
+        self.clusterItemsForUnits = {i : dict() for i in range(clusterCount)}
+        self.clusterLabels = self.KMeans.labels_
+
+        for i, boardTensor in enumerate(winningBoardsTensors):
+            clusterIdx = self.clusterLabels[i]
+
+            # check all 14 possible slots to get items
+            for j in range(14):
+                unitID = int(boardTensor[j, 0].item())
+                # skip empty slots
+                if unitID != 0:
+                    items = [int(boardTensor[j, 3].item()),
+                             int(boardTensor[j, 4].item()),
+                             int(boardTensor[j, 5].item())]
+                    # record items if they have any
+                    if sum(items) > 0:
+                        unitName = self.IDtoName[unitID]
+
+                        if unitName not in self.clusterItemsForUnits[clusterIdx]:
+                            self.clusterItemsForUnits[clusterIdx][unitName] = dict()
+
+                        for itemID in items:
+                            # if holding item
+                            if itemID != 0:
+                                itemName = self.IDtoItem[itemID]
+
+                                if itemName in self.clusterItemsForUnits[clusterIdx][unitName]:
+                                    self.clusterItemsForUnits[clusterIdx][unitName][itemName] += 1
+                                else:
+                                    self.clusterItemsForUnits[clusterIdx][unitName][itemName] = 1
+        print("found items")
 
     def printGoodBoards(self):
         centroids = self.KMeans.cluster_centers_
@@ -98,14 +135,17 @@ class BoardFinder:
 
         return bestClusterIdx, tmp
 
-    def loadModel(self):
+    def loadState(self):
         with open(modelDir, "rb") as f:
-            self.KMeans = pickle.load(f)
+            state = pickle.load(f)
+        self.KMeans = state["model"]
+        self.clusterItemsForUnits = state["compItems"]
         print("model loaded")
 
-    def saveModel(self):
+    def saveState(self):
+        state = {"model": self.KMeans, "compItems" : self.clusterItemsForUnits}
         with open(modelDir, "wb") as f:
-            pickle.dump(self.KMeans, f)
+            pickle.dump(state, f)
         print(f"model saved to {modelDir}")
 
 analyzer = BoardFinder()
