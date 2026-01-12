@@ -6,8 +6,10 @@ from collections import deque
 from config import API_KEY, REGION_ROUTING, PLATFORM_ROUTING
 
 HEADER = {"X-Riot-Token": API_KEY}
-matchCount = 10000 # adjust how many matches you want here
-saveDir = "data/largeMatchBatch" # change to your directory
+matchCount = 3 # adjust how many matches you want here
+saveDir = "data/patch16.2" # change to your directory
+desiredSet = 16 # note that this only scrapes recent match history
+desiredPatch = "16.1" # note that this is based on LoL patches and the season
 
 class LargeScraper():
     def __init__(self, apiKey, region, platform, saveDir):
@@ -89,9 +91,18 @@ class LargeScraper():
                 matchData = self.makeRequest(match_url)
 
                 if matchData:
-                    self.saveMatch(matchID, matchData)
-                    # grab other players in the match for more data
-                    self.snowballPlayers(matchData)
+                    # make sure we are only saving ranked games
+                    # from current set
+                    if (matchData["info"]["tft_set_number"] != desiredSet or
+                        matchData["info"]["queue_id"] != 1100):
+                        continue
+                    version = matchData["info"]["game_version"]
+                    versionShort = version.split(' ')[2]
+                    # also only save games from current patch
+                    if versionShort.startswith(desiredPatch):
+                        self.saveMatch(matchID, matchData)
+                        # grab other players in the match for more data
+                        self.snowballPlayers(matchData)
                 
             if len(self.seenPlayers) % 10 == 0:
                 self.saveState()
