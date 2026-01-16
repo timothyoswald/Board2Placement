@@ -6,7 +6,7 @@ from collections import deque
 from config import API_KEY, REGION_ROUTING, PLATFORM_ROUTING
 
 HEADER = {"X-Riot-Token": API_KEY}
-matchCount = 3 # adjust how many matches you want here
+matchCount = 10000 # adjust how many matches you want here
 saveDir = "data/patch16.2" # change to your directory
 desiredSet = 16 # note that this only scrapes recent match history
 desiredPatch = "16.1" # note that this is based on LoL patches and the season
