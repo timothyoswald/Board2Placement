@@ -191,4 +191,4 @@ All game data is accessed via the official Riot API and used for educational and
 
 ## 📄 License
 
-MIT License (or specify your preferred license here)
+MIT License
