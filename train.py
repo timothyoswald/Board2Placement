@@ -7,8 +7,8 @@ import os
 
 batchSize = 32 # look at this many games before updating network
 learningRate = 0.001
-epochs = 20
-trueData = "data/cleanedData"
+epochs = 25
+trueData = "data/cleaned16.2"
 modelSavePath = "board2placement.pth"
 
 def train():

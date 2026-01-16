@@ -2,9 +2,9 @@ import json
 import os
 import torch
 
-dataDir = "data/largeMatchBatch" # where your scraped match data is
+dataDir = "data/patch16.2" # where your scraped match data is
 IDsDir = "data/IDs" # help to sort the cleaned data
-outputDir = "data/cleanedData" # where you want the cleaned data to go
+outputDir = "data/cleaned16.2" # where you want the cleaned data to go
 
 def filterData():
     print("started")
@@ -20,7 +20,8 @@ def filterData():
     print("processing boards")
 
     for i in range(len(matches)):
-        print(f"match {i} processing")
+        if i % 100 == 0:
+            print(f"processed {i} matches")
         fileName = matches[i]
         with open(os.path.join(dataDir, fileName), "r") as f:
             match = json.load(f)
@@ -41,11 +42,14 @@ def filterData():
                 starLevel = unit["tier"]
                 unitItems = [0, 0, 0]
                 itemNames = unit["itemNames"]
+                
+                # for some reason the match data sometimes will double save items
+                # so this mod is to fix it
                 for j in range(len(itemNames)):
                     item = itemNames[j]
                     if item not in itemIDs:
                         itemIDs[item] = len(itemIDs)
-                    unitItems[j] = itemIDs[item]
+                    unitItems[j % 3] = itemIDs[item]
                 
                 unitVector = [unitIDs[unitName], unitCost, starLevel] + unitItems
                 board.append(unitVector)

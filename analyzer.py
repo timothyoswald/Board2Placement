@@ -3,9 +3,11 @@ import json
 import numpy as np
 import pickle
 import os
+import copy
+import componentData
 from sklearn.cluster import KMeans
 
-dataDir = "data/cleanedData"
+dataDir = "data/cleaned16.2"
 IDsDir = "data/IDs"
 modelDir = "boardFinder.pkl"
 clusterCount = 15
@@ -86,7 +88,107 @@ class BoardFinder:
                                     self.clusterItemsForUnits[clusterIdx][unitName][itemName] += 1
                                 else:
                                     self.clusterItemsForUnits[clusterIdx][unitName][itemName] = 1
-        print("found items")
+        print("found items for clusters")
+
+        # figure out what items are good on what units
+        # for this type of board
+        self.itemWeightsPerCluster = dict()
+        for clusterIdx, unitsDict in self.clusterItemsForUnits.items():
+            self.itemWeightsPerCluster[clusterIdx] = dict()
+
+            for unitName, itemCounts in unitsDict.items():
+                unitCount = sum(itemCounts.values()) # how many times does this unit show up
+                if unitCount < 10: continue # ignore uncommon units
+
+                goodItems = dict()
+
+                for item, count in itemCounts.items():
+                    slamRate = count / unitCount
+                    if slamRate > 0.05: # if this item is made >5% of time add it
+                        goodItems[item] = slamRate
+                
+                self.itemWeightsPerCluster[clusterIdx][unitName] = goodItems
+
+        print("found items for units in each cluster")
+    
+    def getBestItems(self, clusterIdx, currItems):
+        clusterWeights = self.itemWeightsPerCluster[clusterIdx]
+
+        possibleItems = [] # collect what are make-able items
+
+        centroid = self.KMeans.cluster_centers_[clusterIdx]
+
+        coreUnits = []
+        for ID, val in enumerate(centroid):
+            if val > 0.5: # only consider important units
+                coreUnits.append((self.IDtoName[ID], val))
+            
+        for unitName, unitImportance in coreUnits:
+            if unitName not in clusterWeights: continue
+            
+            for itemName, itemWeight in clusterWeights[unitName].items():
+                if itemName not in componentData.itemToComponent: continue
+                
+                # score how important it is for 
+                # this unit to hold this item
+                score = unitImportance * itemWeight * 10
+                
+                possibleItems.append({"id": itemName,
+                                      "recipe": componentData.itemToComponent[itemName],
+                                      "score": score,
+                                      "readText": f"Make {itemName} on {unitName}"
+                                     })
+        
+        # sort by best score
+        possibleItems.sort(key=lambda x: x['score'], reverse=True)
+        
+        # 
+        bestScore, itemsToMake = self.findOptimalItems(currItems, possibleItems)
+        
+        return bestScore, itemsToMake
+    
+    def findOptimalItems(self, currItems, possibleItems, memo = None):
+        # make this into a tuple so it is hashable
+        currItemsKey = tuple(sorted(currItems.items()))
+
+        if memo == None:
+            memo = dict()
+        if currItemsKey in memo:
+            return memo[currItemsKey]
+        
+        bestScore = 0
+        itemsToMake = []
+
+        for item in possibleItems:
+            comp1, comp2 = item["recipe"][0], item["recipe"][1]
+
+            # check if we can make this item
+            # given our components
+            canMake = False
+            if comp1 == comp2:
+                if currItems.get(comp1, 0) >= 2:
+                    canMake = True
+            else:
+                if currItems.get(comp1, 0) >= 1 and currItems.get(comp2, 0) >= 1:
+                    canMake = True
+            
+            if canMake:
+                leftoverItems = copy.deepcopy(currItems) # so we can backtrack w/o aliasing
+                leftoverItems[comp1] -= 1
+                leftoverItems[comp2] -= 1
+
+                # recurse to find other items
+                trialScore, trialItems = self.findOptimalItems(leftoverItems, possibleItems, memo)
+
+                currScore = trialScore + item["score"]
+                if currScore > bestScore:
+                    bestScore = currScore
+                    itemsToMake = [item] + trialItems
+        
+        # store state in memo
+        memo[currItemsKey] = (bestScore, itemsToMake)
+        return (bestScore, itemsToMake)
+
 
     def printGoodBoards(self):
         centroids = self.KMeans.cluster_centers_
@@ -102,7 +204,7 @@ class BoardFinder:
             print(f"Board {i + 1} : {', '.join(boardNames)}")        
     
     # currentBoard is a list of strings of unit names
-    def completeBoard(self, currentBoard):
+    def completeBoard(self, currentBoard, currItems):
         unitIDs = self.IDsFile["unitIDs"]
         boardVector = np.zeros(self.numUnits)
         boardIDs = []
@@ -115,35 +217,42 @@ class BoardFinder:
         
         bestScore = -1
         bestClusterIdx = -1
+        bestItems = None
 
         for i, centroid in enumerate(self.KMeans.cluster_centers_):
-            # dot product to score, highly orthogonal comps close to 0
-            score = np.dot(boardVector, centroid)
+            # dot product to score units, highly orthogonal comps close to 0
+            unitsScore = np.dot(boardVector, centroid)
+            itemsScore, itemSlams = self.getBestItems(i, currItems)
 
-            if score > bestScore:
-                bestScore = score
+            totalScore = unitsScore + itemsScore
+
+            if totalScore > bestScore:
+                bestScore = totalScore
                 bestClusterIdx = i
+                bestItems = itemSlams
         
         bestCentroid = self.KMeans.cluster_centers_[bestClusterIdx]
 
-        tmp = []
+        suggestedUnits = []
         for ID, score in enumerate(bestCentroid):
             if ID not in boardIDs and score > 0.5:
                 unitName = self.IDtoName[ID]
-                tmp.append((unitName, score))
-        tmp.sort(key = lambda x : x[1], reverse = True)
+                suggestedUnits.append(unitName)
+        suggestedUnits.sort(key = lambda x : x[1], reverse = True)
 
-        return bestClusterIdx, tmp
+        return bestClusterIdx, suggestedUnits, bestItems
 
     def loadState(self):
         with open(modelDir, "rb") as f:
             state = pickle.load(f)
         self.KMeans = state["model"]
         self.clusterItemsForUnits = state["compItems"]
+        self.itemWeightsPerCluster = state["itemWeights"]
         print("model loaded")
 
     def saveState(self):
-        state = {"model": self.KMeans, "compItems" : self.clusterItemsForUnits}
+        state = {"model": self.KMeans, "compItems" : self.clusterItemsForUnits,
+                 "itemWeights": self.itemWeightsPerCluster}
         with open(modelDir, "wb") as f:
             pickle.dump(state, f)
         print(f"model saved to {modelDir}")
@@ -151,10 +260,13 @@ class BoardFinder:
 analyzer = BoardFinder()
 analyzer.printGoodBoards()
 
-testBoard = ["TFT16_Rumble", "TFT16_JarvanIV", "TFT16_Lulu"]
+testBoard = ["TFT16_Jhin", "TFT16_Shen", "TFT16_XinZhao"]
+testItems = {"TFT_Item_BFSword": 1, "TFT_Item_RecurveBow": 2, "TFT_Item_NeedlesslyLargeRod": 1,
+             "TFT_Item_NegatronCloak": 1, "TFT_Item_SparringGloves": 1}
 print(f"completing {testBoard}...")
-i, suggestedUnits = analyzer.completeBoard(testBoard)
+i, suggestedUnits, bestItems = analyzer.completeBoard(testBoard, testItems)
 print(f"this is closest to Board #{i}")
-print(f"recomended units:")
-for name, score in suggestedUnits:
-    print(f"{name} with score {score}")
+print(f"recomended units: {suggestedUnits}")
+print(f"recommended items:")
+for d in bestItems:
+    print(d["readText"])
