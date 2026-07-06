@@ -1,8 +1,9 @@
 config.py
 data/
 board2placement.pth
-scraperState.json
 boardFinder.pkl
+scraperState*.json
+component_gen_preview.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
