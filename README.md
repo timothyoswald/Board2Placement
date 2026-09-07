@@ -144,34 +144,34 @@ A live `recommend()` call returns a `CompRecommendation` with score breakdowns, 
 | [`evaluate.py`](evaluate.py) | Placement metrics. |
 | [`run_pipeline.py`](run_pipeline.py) | End-to-end orchestration. |
 
-### Generated Artifacts (typically gitignored)
+### Inference artifacts (committed, ~0.5 MB)
+
+Clone the repo and run recommendations / list comps **without scraping or training**. These files are versioned with the Set 18 / patch 18.1 setup:
 
 | Path | Purpose |
 |------|---------|
-| `data/patch18.1/` | Raw match JSON. |
-| `data/IDs` | Unit / item / trait vocab. |
+| [`boardFinder.pkl`](boardFinder.pkl) | K-Means clusters + composition profiles for `recommend()` / `print_good_boards()`. |
+| [`board2placement.pth`](board2placement.pth) | Placement network weights (optional expected / projected placement). |
+| [`data/IDs`](data/IDs) | Unit / item / trait vocab (name ↔ index). |
+| [`data/championTraits.json`](data/championTraits.json) | Champion↔trait static map for labeling. |
+
+### Rebuild-only data (gitignored)
+
+| Path | Purpose |
+|------|---------|
+| `data/patch18.1/` | Raw match JSON (~tens of MB). |
 | `data/cleaned18.1`, `data/cleaned18.1_partial` | Training tensors. |
-| `data/championTraits.json` | Champion↔trait static map. |
-| `boardFinder.pkl` | Cluster model + profiles. |
-| `board2placement.pth` | Placement weights. |
 | `scraperState_patch18.1.json` | Scrape resume checkpoint. |
 
 ---
 
 ## Usage
 
-```bash
-# One-shot (needs a valid Riot key in config.py or RIOT_API_KEY)
-python run_pipeline.py
+### Inference (no API key, no retraining)
 
-# Or step by step:
-python build_champion_map.py
-python gen_component_data.py
-python dataScraper.py          # B2P_MATCH_COUNT=2000 by default via settings
-python filterData.py
-python analyzer.py             # trains/loads boardFinder.pkl, prints comps
-python train.py
-python evaluate.py
+```bash
+# Needs: torch, scikit-learn, numpy (and requests only if rebuilding)
+python analyzer.py   # loads boardFinder.pkl and prints learned comps
 ```
 
 Recommend from a mid-game state (use Set 18 API unit / component names from `data/IDs`):
@@ -209,9 +209,23 @@ from analyzer import BoardFinder
 BoardFinder().print_good_boards()
 ```
 
----
+### Rebuild / retrain (needs Riot API key)
 
-## Tech Stack
+```bash
+# One-shot
+python run_pipeline.py
+
+# Or step by step:
+python build_champion_map.py
+python gen_component_data.py
+python dataScraper.py          # B2P_MATCH_COUNT=2000 by default via settings
+python filterData.py
+python analyzer.py             # rebuilds boardFinder.pkl, prints comps
+python train.py                # rebuilds board2placement.pth
+python evaluate.py
+```
+
+After retraining, commit the four inference artifacts again so clones stay usable.
 
 * **Language:** Python 3.x
 * **ML:** PyTorch, scikit-learn (K-Means), NumPy

@@ -1,7 +1,9 @@
 config.py
-data/
-board2placement.pth
-boardFinder.pkl
+# Rebuild-only data (raw matches + training tensors). Inference artifacts stay tracked.
+data/patch*/
+data/cleaned*
+data/rawMatches/
+data/trueData
 scraperState*.json
 component_gen_preview.txt
 
