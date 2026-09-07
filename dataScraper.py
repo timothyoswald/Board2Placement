@@ -3,17 +3,39 @@ import json
 import time
 import os
 import sys
+import re
 from collections import deque
-from config import API_KEY, REGION_ROUTING, PLATFORM_ROUTING
+from config import API_KEY, REGION_ROUTING, PLATFORM_ROUTING, SLEEP_TIME
+from settings import (
+    ACCEPT_ANY_VERSION_FOR_SET,
+    DATA_DIR,
+    FALLBACK_PATCHES,
+    MATCH_COUNT,
+    PATCH,
+    SCRAPER_STATE_FILE,
+    TFT_SET,
+)
 
 HEADER = {"X-Riot-Token": API_KEY}
-matchCount = int(os.environ.get("B2P_MATCH_COUNT", 10000))
-saveDir = "data/patch17.6"
-desiredSet = 17  # note that this only scrapes recent match history
-desiredPatch = "17.6"  # LoL client patch prefix (not TFT set number)
-# Set 17 currently runs on LoL patch 16.13.x until 17.6 is live on the API.
-fallbackPatches = ["16.13", "16.12"]
-stateFile = "scraperState_patch17.6.json"
+matchCount = MATCH_COUNT
+saveDir = DATA_DIR
+desiredSet = TFT_SET
+desiredPatch = PATCH
+fallbackPatches = list(FALLBACK_PATCHES)
+stateFile = SCRAPER_STATE_FILE
+
+
+def extract_version_token(game_version: str) -> str | None:
+    """Best-effort parse of Riot game_version strings across Hextech/Unreal."""
+    if not game_version:
+        return None
+    # Classic: "Version 14.6.xxx.yyyy ..."
+    parts = game_version.split()
+    if len(parts) >= 3 and parts[0].lower() in ("version", "v"):
+        return parts[2]
+    # Fallback: first X.Y or X.Y.Z token
+    m = re.search(r"\d+\.\d+(?:\.\d+)?", game_version)
+    return m.group(0) if m else None
 
 
 class LargeScraper:
@@ -28,6 +50,8 @@ class LargeScraper:
         self.seenPlayers = set()
         self.seenMatches = set()
         self.checkedMatches = 0
+        self.loggedVersion = False
+        self.acceptAnyVersion = ACCEPT_ANY_VERSION_FOR_SET
         self.patchCandidates = [os.environ.get("B2P_PATCH", desiredPatch)]
         for patch in fallbackPatches:
             if patch not in self.patchCandidates:
@@ -44,6 +68,7 @@ class LargeScraper:
                 response = self.session.get(url, headers=HEADER)
 
                 if response.status_code == 200:
+                    time.sleep(SLEEP_TIME)
                     return response.json()
                 elif response.status_code == 429:
                     waitTime = int(response.headers.get("Retry-After", 5))
@@ -80,10 +105,16 @@ class LargeScraper:
         if puuid not in self.seenPlayers and puuid not in self.playerQueue:
             self.playerQueue.append(puuid)
 
-    def _patch_matches(self, version_short: str) -> bool:
+    def _patch_matches(self, version_short: str | None) -> bool:
+        if self.acceptAnyVersion:
+            return True
+        if not version_short:
+            return False
         return any(version_short.startswith(patch) for patch in self.patchCandidates)
 
     def _maybe_fallback_patch(self):
+        if self.acceptAnyVersion:
+            return
         if len(self.seenMatches) > 0 or self.checkedMatches < 150:
             return
         if len(self.patchCandidates) <= 1:
@@ -98,7 +129,7 @@ class LargeScraper:
     def scrape(self):
         print(
             f"starting scrape | set={desiredSet} | patch prefixes={self.patchCandidates} | "
-            f"target={matchCount}",
+            f"accept_any_version={self.acceptAnyVersion} | target={matchCount}",
             flush=True,
         )
         while len(self.seenMatches) < matchCount and self.playerQueue:
@@ -125,12 +156,15 @@ class LargeScraper:
                     continue
 
                 info = matchData["info"]
-                if info["tft_set_number"] != desiredSet or info["queue_id"] != 1100:
+                if info.get("tft_set_number") != desiredSet or info.get("queue_id") != 1100:
                     continue
 
-                version = info["game_version"]
-                versionShort = version.split(" ")[2]
+                version = info.get("game_version", "")
+                versionShort = extract_version_token(version)
                 self.checkedMatches += 1
+                if not self.loggedVersion:
+                    print(f"observed game_version={version!r} token={versionShort!r}", flush=True)
+                    self.loggedVersion = True
                 self._maybe_fallback_patch()
 
                 if self._patch_matches(versionShort):

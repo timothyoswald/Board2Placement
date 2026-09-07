@@ -2,7 +2,13 @@
 import os
 import subprocess
 import sys
-import time
+
+from settings import (
+    BOARD_FINDER_PATH,
+    DATA_DIR,
+    MATCH_COUNT,
+    PLACEMENT_MODEL_PATH,
+)
 
 
 def run(cmd: list[str], env: dict | None = None):
@@ -14,16 +20,15 @@ def run(cmd: list[str], env: dict | None = None):
 
 
 def count_matches() -> int:
-    data_dir = "data/patch17.6"
-    if not os.path.isdir(data_dir):
+    if not os.path.isdir(DATA_DIR):
         return 0
-    return len([f for f in os.listdir(data_dir) if f.endswith(".json")])
+    return len([f for f in os.listdir(DATA_DIR) if f.endswith(".json")])
 
 
 def main():
-    os.makedirs("data/patch17.6", exist_ok=True)
+    os.makedirs(DATA_DIR, exist_ok=True)
 
-    target_matches = int(os.environ.get("B2P_MATCH_COUNT", "2000"))
+    target_matches = MATCH_COUNT
     existing = count_matches()
     if existing < target_matches:
         run(
@@ -33,7 +38,10 @@ def main():
     else:
         print(f"using existing {existing} scraped matches", flush=True)
 
-    for stale in ("boardFinder.pkl", "board2placement.pth"):
+    run([sys.executable, "build_champion_map.py"])
+    run([sys.executable, "gen_component_data.py"])
+
+    for stale in (BOARD_FINDER_PATH, PLACEMENT_MODEL_PATH):
         if os.path.exists(stale):
             os.remove(stale)
             print(f"removed stale {stale}", flush=True)
@@ -42,6 +50,7 @@ def main():
     run([sys.executable, "-c", "from analyzer import BoardFinder; BoardFinder().saveState()"])
     run([sys.executable, "train.py"])
     run([sys.executable, "evaluate.py"])
+    run([sys.executable, "-c", "from analyzer import BoardFinder; BoardFinder().print_good_boards()"])
 
 
 if __name__ == "__main__":

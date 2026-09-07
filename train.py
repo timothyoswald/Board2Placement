@@ -3,29 +3,42 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from model import Board2Placement
-import numpy as np
+from settings import CLEANED_DIR, CLEANED_PARTIAL_DIR, PLACEMENT_MODEL_PATH
 
 batchSize = 32
 learningRate = 0.001
 epochs = 25
-trueData = "data/cleaned17.6_partial"
-fallbackData = "data/cleaned17.6"
-modelSavePath = "board2placement.pth"
+trueData = CLEANED_PARTIAL_DIR
+fallbackData = CLEANED_DIR
+modelSavePath = PLACEMENT_MODEL_PATH
 useDistributionHead = True
 
 
 def load_dataset(path: str):
     data = torch.load(path, weights_only=False)
-    # Support legacy 2-tuple format
-    if len(data[0]) == 2:
+    # Support legacy formats: 2/3/4-tuple, or 5-tuple with trait counts
+    first = data[0]
+    if len(first) == 2:
         boards = torch.stack([x[0] for x in data])
         contexts = torch.zeros(len(data), 3)
+        traits = torch.zeros(len(data), 1)
         targets = torch.stack([x[1] for x in data])
+    elif len(first) == 3:
+        boards = torch.stack([x[0] for x in data])
+        contexts = torch.stack([x[1] for x in data])
+        traits = torch.zeros(len(data), 1)
+        targets = torch.stack([x[2] for x in data])
+    elif len(first) == 5:
+        boards = torch.stack([x[0] for x in data])
+        contexts = torch.stack([x[1] for x in data])
+        traits = torch.stack([x[2] for x in data])
+        targets = torch.stack([x[4] for x in data])
     else:
         boards = torch.stack([x[0] for x in data])
         contexts = torch.stack([x[1] for x in data])
-        targets = torch.stack([x[2] for x in data])
-    return boards, contexts, targets
+        traits = torch.stack([x[2] for x in data])
+        targets = torch.stack([x[3] for x in data])
+    return boards, contexts, traits, targets
 
 
 def compute_metrics(preds, targets, is_distribution=False):
@@ -54,8 +67,8 @@ def train():
     print(f"Using {device} device")
     print(f"Loading data from {data_path}")
 
-    boards, contexts, targets = load_dataset(data_path)
-    dataset = TensorDataset(boards, contexts, targets)
+    boards, contexts, traits, targets = load_dataset(data_path)
+    dataset = TensorDataset(boards, contexts, traits, targets)
     print(f"loaded {len(dataset)} samples")
 
     trainingSize = int(0.8 * len(dataset))
@@ -81,13 +94,14 @@ def train():
         model.train()
         totalTrainingLoss = 0
 
-        for batchBoard, batchContext, batchTargets in trainingLoader:
+        for batchBoard, batchContext, batchTraits, batchTargets in trainingLoader:
             batchBoard = batchBoard.to(device)
             batchContext = batchContext.to(device)
+            batchTraits = batchTraits.to(device)
             batchTargets = batchTargets.to(device)
 
             optimizer.zero_grad()
-            guesses = model(batchBoard, batchContext)
+            guesses = model(batchBoard, batchContext, batchTraits)
             loss = criterion(guesses, target_fn(batchTargets))
             loss.backward()
             optimizer.step()
@@ -101,11 +115,12 @@ def train():
         all_preds = []
         all_targets = []
         with torch.no_grad():
-            for valBoard, valContext, valTarget in validationLoader:
+            for valBoard, valContext, valTraits, valTarget in validationLoader:
                 valBoard = valBoard.to(device)
                 valContext = valContext.to(device)
+                valTraits = valTraits.to(device)
                 valTarget = valTarget.to(device)
-                guesses2 = model(valBoard, valContext)
+                guesses2 = model(valBoard, valContext, valTraits)
                 loss2 = criterion(guesses2, target_fn(valTarget))
                 totalValidationLoss += loss2.item()
                 all_preds.append(guesses2.cpu())

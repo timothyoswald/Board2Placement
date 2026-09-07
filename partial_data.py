@@ -5,12 +5,18 @@ Riot match history lacks mid-game snapshots, so we simulate them.
 from __future__ import annotations
 
 import random
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 
 import componentData
-from state import BOARD_SLOTS, UNIT_FEATURES
+from settings import CHAMPION_MAP_PATH
+from state import (
+    BOARD_SLOTS,
+    UNIT_FEATURES,
+    load_champion_trait_map,
+    recompute_traits_from_board,
+)
 
 
 def _item_id_to_name(item_id: int, id_to_item: dict) -> str:
@@ -88,20 +94,35 @@ def sample_economy(stage: float, rng: random.Random) -> Tuple[float, float]:
 
 
 def generate_partial_samples(
-    dataset: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+    dataset: List[Tuple],
     id_to_item: dict,
     item_ids: dict,
     samples_per_board: int = 3,
     seed: int = 42,
-) -> List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    trait_ids: Optional[dict] = None,
+    unit_ids: Optional[dict] = None,
+) -> List[Tuple]:
     """
-    From final-board dataset entries (board, context, placement),
-    generate synthetic partial states.
+    From final-board dataset entries (board, context, traits[, counts], placement),
+    generate synthetic partial states with recomputed traits.
     """
     rng = random.Random(seed)
     partial_data = []
+    champ_map = load_champion_trait_map(CHAMPION_MAP_PATH)
+    id_to_name = {v: k for k, v in (unit_ids or {}).items()} if unit_ids else {}
+    trait_ids = trait_ids or {"reserve": 0}
+    num_traits = len(trait_ids)
 
-    for board, _final_context, placement in dataset:
+    for entry in dataset:
+        if len(entry) == 5:
+            board, _final_context, _final_traits, _final_counts, placement = entry
+        elif len(entry) == 4:
+            board, _final_context, _final_traits, placement = entry
+        elif len(entry) == 3:
+            board, _final_context, placement = entry
+        else:
+            board, placement = entry
+
         for _ in range(samples_per_board):
             stage = float(rng.randint(2, 5))
             level, gold = sample_economy(stage, rng)
@@ -109,13 +130,18 @@ def generate_partial_samples(
                 board, stage, id_to_item, item_ids, rng
             )
             context = torch.tensor([stage, level, gold], dtype=torch.float32)
-            partial_data.append((partial_board, context, placement))
+            if id_to_name and champ_map:
+                traits = recompute_traits_from_board(
+                    partial_board, id_to_name, trait_ids, champ_map
+                )
+            else:
+                traits = torch.zeros(num_traits, dtype=torch.float32)
+            # Counts unused by placement net; zeros keep tuple shape consistent
+            counts = torch.zeros(num_traits, dtype=torch.float32)
+            partial_data.append((partial_board, context, traits, counts, placement))
 
     return partial_data
 
 
-def merge_datasets(
-    final_data: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
-    partial_data: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
-) -> List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+def merge_datasets(final_data: List[Tuple], partial_data: List[Tuple]) -> List[Tuple]:
     return final_data + partial_data

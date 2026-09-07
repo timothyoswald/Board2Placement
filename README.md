@@ -1,44 +1,115 @@
 # Board2Placement
 
-This project began as an exploration of **applied machine learning in a domain I was already deeply familiar with**.
+Data-driven Teamfight Tactics tooling: scrape high-ELO ranked matches, discover live meta compositions, recommend pivots / item slams from a mid-game board, and predict final placement (1–8).
 
-I figured that Teamfight Tactics is an especially interesting environment for experimentation because:
+Currently wired for **Set 18 (Enchanted Wilds) / patch 18.1** via [`settings.py`](settings.py).
 
-* the state space is complex but **finite and well-structured**,
-* the number of meaningful features (units, items, traits, positions) is relatively small,
-* and outcomes are clearly measurable (placement 1–8).
-
-My guiding belief was that TFT is constrained enough that a machine should be able to find patterns in the decision space and "solve" the game. This was further reinforced by the fact that Riot Games (creator of Teamfight Tactics) removed Augment Data from their public API.
-
-Rather than building a heuristic-heavy system like I tried previously, the goal was to see how far I could get by:
-
-* learning structure directly from data,
-* enumerating valid decisions algorithmically,
-* and using machine learning to score and compare outcomes.
+This project explores applied ML in a domain with a **finite, structured state space** (units, items, traits, economy) and a clear outcome label (placement). Augments and Wisps are mostly unavailable from the public Riot match API, so the system leans on boards, traits, items, and economy instead of heuristic augment logic.
 
 ---
 
 ## How It Works
 
-The pipeline has three layers that build on each other:
+Three layers stack on each other:
 
-1. **Data** — Scrape ranked matches, convert them into board tensors with economy context.
-2. **Meta discovery** — Cluster top-4 boards into composition archetypes and learn item patterns per comp.
-3. **Recommendation + prediction** — Match a player's current board/items/economy to the best comp direction, suggest item slams, and estimate expected placement.
+1. **Data** — Scrape Challenger ranked matches; convert boards into tensors with economy context and trait vectors.
+2. **Meta discovery** — Cluster **top-4** end boards with K-Means into ~15 composition archetypes; learn item slam rates, carries/tanks, trait labels, and emblem needs per archetype.
+3. **Recommendation + prediction** — Match a live board + held components + economy to the best comps; suggest craftable item slams; optionally estimate expected placement now and “at cap.”
 
 ```mermaid
 flowchart TD
-    RawMatches[Raw Match JSON] --> FilterData[filterData.py]
-    FilterData --> FinalBoardDataset[Final Board Dataset]
-    FinalBoardDataset --> ArchetypeModel[analyzer.py K-Means]
-    FinalBoardDataset --> PlacementModel[model.py + train.py]
-    PartialData[partial_data.py] --> PlacementModel
-    ArchetypeModel --> Recommendation[Comp Recommendations]
-    PlacementModel --> Recommendation
-    GameState[state.py] --> ArchetypeModel
-    GameState --> PlacementModel
-    GameState --> Recommendation
+  RawMatches[Raw Match JSON] --> FilterData[filterData.py]
+  CDragon[Community Dragon] --> ChampMap[championTraits.json]
+  CDragon --> Recipes[componentData.py]
+  FilterData --> FinalBoardDataset[Final Board Dataset]
+  FinalBoardDataset --> ArchetypeModel[analyzer.py K-Means]
+  FinalBoardDataset --> PlacementModel[model.py + train.py]
+  PartialData[partial_data.py] --> PlacementModel
+  ChampMap --> ArchetypeModel
+  Recipes --> ArchetypeModel
+  ArchetypeModel --> Recommendation[Comp Recommendations]
+  PlacementModel --> Recommendation
+  GameState[state.py] --> Recommendation
 ```
+
+---
+
+## What Counts as a “Good Composition”?
+
+Comps are **not** hand-authored. They are learned from data:
+
+1. Keep only boards that **finished top 4** in Challenger ranked (`queue_id` 1100).
+2. Represent each board as a vector of **unit presence** (cost-weighted) **concatenated with active traits** (style / 4, downweighted in clustering).
+3. Run **K-Means** (`CLUSTER_COUNT`, default 15) to find recurring archetypes.
+4. For each cluster, build a rich profile (units, traits, items, economy, emblems).
+
+So a “good composition” here means: **a pattern that frequently appears among Challenger top-4 boards on the current patch**, not a named guide from a content site.
+
+When recommending a direction for *your* board, each cluster is scored as:
+
+| Signal | Weight | Meaning |
+|--------|--------|---------|
+| Item fit (+ craftable slams) | 45% | Your completed / craftable items match what that archetype slamms |
+| Unit fit | 25% | Cosine similarity of your units+traits to the cluster centroid |
+| Economy fit | 20% | Level / gold / stage can realistically reach the archetype’s cost profile |
+| Transition cost | 10% | How many important core units you are still missing (inverted) |
+
+Feasibility labels map economy + transition into `easy` / `medium` / `greedy` / `unrealistic`.
+
+---
+
+## What Each Composition Tells You
+
+Running `BoardFinder().print_good_boards()` (or `python analyzer.py`) prints every learned archetype. Per-cluster fields include:
+
+| Field | Description |
+|-------|-------------|
+| **display_name** | Human trait label from Community Dragon (e.g. `3 Solar`, `Caustic / Monolith`, `2 Fae (emblem)`) using real `num_units` + breakpoints—not Riot “style” misread as unit count |
+| **trait_core_units** | Units that actually hold the cluster’s main traits |
+| **splash_units** | Frequent partners that are *not* on those traits (flex / splash) |
+| **carries / tanks** | Inferred from offensive vs defensive completed-item slam rates, restricted to frequent trait cores |
+| **item_weights / item_lift** | Per-unit slam rates and lift over the global baseline |
+| **needs_emblem / emblem_items** | Traits that look emblem-gated (natural holders &lt; breakpoint, or high emblem slam rate) |
+| **required_level**, **avg_board_cost**, **count_4cost / count_5cost** | Economy shape of the archetype |
+| **core_units** | Full centroid-ranked unit list used for similarity / missing-unit lists |
+
+A live `recommend()` call returns a `CompRecommendation` with score breakdowns, owned/missing cores, recommended crafts (`Make X on Y`), feasibility, and optional **expected** / **projected** placement from the neural net.
+
+---
+
+## Capabilities
+
+### Data pipeline
+* Riot TFT API scrape from Challenger ladder, snowballing through match participants
+* Set / patch filters (`settings.py`); Unreal-era `game_version` handling
+* Scraper resume via checkpoint state file
+* Community Dragon: champion→trait map, display names, breakpoints, unique traits, emblem→trait map
+* Auto-generated craft recipes (`gen_component_data.py` → `componentData.py`), including Set 18 `DA_*` items and emblems
+* Champion-only board filtering (drops non-champ summons when possible)
+
+### Meta / recommender (`analyzer.py`)
+* Unsupervised top-4 archetype discovery (units + traits)
+* Trait-aware labeling (uniques, breakpoints, display names like Monolith for `DA_18_Battlemage`)
+* Item-first matching and memoized DFS component crafting solver
+* Economy-aware pivot feasibility
+* Emblem-aware trait labels
+* Optional placement estimates via loaded `board2placement.pth`
+
+### Placement model (`model.py` / `train.py` / `evaluate.py`)
+* Per-slot unit + item embeddings, masked mean over occupied slots
+* Economy context (stage, level, gold) + trait style vector
+* Predicts placement as regression **or** 8-way distribution (default)
+* Trains on final boards **plus** synthetic mid-game partials (`partial_data.py`)
+* Metrics: MAE, top-4 accuracy, exact placement accuracy
+
+### Orchestration
+* [`run_pipeline.py`](run_pipeline.py) — scrape (if needed) → champion map → recipes → filter → cluster → train → evaluate → print comps
+* [`settings.py`](settings.py) — single place to retarget set / patch / paths / cluster count
+
+### Not in the public API (and therefore not modeled)
+* Wisps (Set 18 shop mechanic)
+* Reliable augments (often missing)
+* Hex positions / positioning
 
 ---
 
@@ -48,67 +119,62 @@ flowchart TD
 
 | File | Purpose |
 |------|---------|
-| [`config.py`](config.py) | Holds your Riot API key, region routing (`americas`, `na1`, etc.), and rate-limit settings. Required by `dataScraper.py`. Keys expire every 24 hours on dev accounts. |
-| [`componentData.py`](componentData.py) | Static lookup tables for TFT components and item recipes (e.g. Blue Buff = Tear + Tear). Used by the item crafting solver in `analyzer.py`. |
+| [`settings.py`](settings.py) | Committed set/patch paths, cluster count, CDragon URL, match target. |
+| [`config.py`](config.py) | Riot API key + region routing (gitignored). Dev keys expire ~24h. Prefer env `RIOT_API_KEY` / `RGAPI_KEY`. |
+| [`componentData.py`](componentData.py) | Component set + item recipes for the craft solver (auto-generated). |
 
 ### Data Pipeline
 
 | File | Purpose |
 |------|---------|
-| [`dataScraper.py`](dataScraper.py) | Crawls the Riot Games API for ranked TFT matches. Seeds from Challenger players, snowballs through match participants, enforces current set/patch filters, and handles rate limits with automatic retries. Saves raw match JSON to `data/patch*/`. |
-| [`filterData.py`](filterData.py) | Converts raw match JSON into ML-ready PyTorch datasets. Builds unit/item vocabularies, parses each player's final board and economy context (stage, level, gold), and saves `(board, context, placement)` tuples to `data/cleaned*/`. Optionally generates a partial-game dataset via `partial_data.py`. |
-| [`state.py`](state.py) | Shared `GameState` dataclass used across the project. Represents a 14-slot board tensor plus stage, level, gold, and held components. Provides feature helpers (unit vectors, board cost, item assignments, cosine similarity) and parsers for both Riot API JSON and manual unit-name input. |
-| [`partial_data.py`](partial_data.py) | Generates synthetic mid-game states from final boards. Because Riot match history only has end-of-game snapshots, this masks expensive units, down-stars units, and converts completed items back to components to simulate Stage 2–5 boards for training the placement model. |
+| [`dataScraper.py`](dataScraper.py) | Challenger-seeded match scrape → `data/patch*/`. |
+| [`filterData.py`](filterData.py) | Raw JSON → vocab + tensors `(board, context, traits, trait_counts, placement)`. |
+| [`state.py`](state.py) | `GameState`, parsers, trait encoding, cosine helpers. |
+| [`partial_data.py`](partial_data.py) | Synthetic Stage 2–5 boards for placement training. |
+| [`build_champion_map.py`](build_champion_map.py) | Community Dragon → `data/championTraits.json`. |
+| [`gen_component_data.py`](gen_component_data.py) | Community Dragon → `componentData.py` recipes. |
 
-### Meta Discovery & Recommendations
-
-| File | Purpose |
-|------|---------|
-| [`analyzer.py`](analyzer.py) | The core recommendation engine. Clusters top-4 boards with K-Means, builds rich `ClusterProfile` objects (unit centroids, item lift over global baseline, carry/tank inference, cost/level requirements), and scores candidate comps with weighted item fit (45%), unit fit (25%), economy feasibility (20%), and transition cost (10%). Includes a memoized DFS item crafting solver and returns `CompRecommendation` objects with feasibility ratings, missing units, item slams, and optional expected/projected placement. Saves/loads state to `boardFinder.pkl`. |
-
-### Predictive Modeling
+### Meta & Modeling
 
 | File | Purpose |
 |------|---------|
-| [`model.py`](model.py) | PyTorch `Board2Placement` network. Embeds units and items per slot, uses masked pooling (only occupied slots contribute), fuses economy context (stage, level, gold), and predicts either a single placement value or an 8-class placement distribution. Provides `expected_placement()` and `top4_probability()` helpers. |
-| [`train.py`](train.py) | Training loop for the placement model. Loads final and partial datasets, splits 80/20 train/validation, trains with Adam + learning rate scheduling, and reports MAE and top-4 accuracy each epoch. Saves best weights to `board2placement.pth`. |
-| [`evaluate.py`](evaluate.py) | Standalone evaluation script. Loads a trained model and reports MAE, top-4 accuracy, and exact placement accuracy on the held-out dataset. |
+| [`analyzer.py`](analyzer.py) | K-Means comps, profiles, recommend / craft / print. |
+| [`model.py`](model.py) | `Board2Placement` network. |
+| [`train.py`](train.py) | Placement training loop. |
+| [`evaluate.py`](evaluate.py) | Placement metrics. |
+| [`run_pipeline.py`](run_pipeline.py) | End-to-end orchestration. |
 
-### Generated Artifacts (not in repo)
+### Generated Artifacts (typically gitignored)
 
 | Path | Purpose |
 |------|---------|
-| `data/patch*/` | Raw scraped match JSON from the Riot API. |
-| `data/IDs` | Unit and item name → integer ID mappings built by `filterData.py`. |
-| `data/cleaned*` | Preprocessed PyTorch datasets (final boards and optional partial states). |
-| `boardFinder.pkl` | Saved K-Means model, cluster item weights, and cluster profiles from `analyzer.py`. |
-| `board2placement.pth` | Saved placement model weights from `train.py`. |
-| `scraperState.json` | Scraper checkpoint (seen matches/players) for resuming downloads. |
+| `data/patch18.1/` | Raw match JSON. |
+| `data/IDs` | Unit / item / trait vocab. |
+| `data/cleaned18.1`, `data/cleaned18.1_partial` | Training tensors. |
+| `data/championTraits.json` | Champion↔trait static map. |
+| `boardFinder.pkl` | Cluster model + profiles. |
+| `board2placement.pth` | Placement weights. |
+| `scraperState_patch18.1.json` | Scrape resume checkpoint. |
 
 ---
 
 ## Usage
 
-Run the pipeline in order:
-
 ```bash
-# 1. Set your API key in config.py, then scrape matches
-python dataScraper.py
+# One-shot (needs a valid Riot key in config.py or RIOT_API_KEY)
+python run_pipeline.py
 
-# 2. Preprocess into tensors (also generates partial-game samples)
+# Or step by step:
+python build_champion_map.py
+python gen_component_data.py
+python dataScraper.py          # B2P_MATCH_COUNT=2000 by default via settings
 python filterData.py
-
-# 3. Train composition archetypes (creates boardFinder.pkl if missing)
-python analyzer.py
-
-# 4. Train the placement predictor
+python analyzer.py             # trains/loads boardFinder.pkl, prints comps
 python train.py
-
-# 5. Evaluate model performance
 python evaluate.py
 ```
 
-Example recommendation from Python:
+Recommend from a mid-game state (use Set 18 API unit / component names from `data/IDs`):
 
 ```python
 from analyzer import BoardFinder
@@ -116,56 +182,62 @@ from state import game_state_from_names
 
 finder = BoardFinder()
 gs = game_state_from_names(
-    unit_names=["TFT16_Briar", "TFT16_Draven", "TFT16_Sion"],
-    components={"TFT_Item_TearOfTheGoddess": 2, "TFT_Item_NeedlesslyLargeRod": 1},
+    unit_names=["DA_18_Kayle", "DA_18_Sejuani", "DA_18_Leona"],
+    components={
+        "DA_Component_TearOfTheGoddess": 2,
+        "DA_Component_NeedlesslyLargeRod": 1,
+    },
     ids_file=finder.ids_file,
-    stage=3.0, level=6.0, gold=20.0,
+    stage=3.0,
+    level=6.0,
+    gold=20.0,
 )
 for rec in finder.recommend(gs, top_k=3):
-    print(rec.cluster_idx, rec.feasibility, rec.item_fit, rec.missing_units)
+    print(
+        rec.display_name,
+        rec.feasibility,
+        rec.total_score,
+        rec.missing_units[:5],
+        [d["readText"] for d in rec.recommended_items],
+    )
 ```
 
----
+List learned meta comps:
 
-## Key Capabilities
-
-* **Item-first comp matching** — Items are weighted more heavily than units when identifying which composition a player should commit to, since mid-game unit lineups are often temporary.
-* **Economy-aware feasibility** — Penalizes chasing expensive late-game boards when the player is low level or low on gold (e.g. level 6 with 20g should not pivot into a fast 9 legendary board).
-* **Dynamic meta adaptation** — Archetypes are learned from live top-4 data, not hardcoded comp names.
-* **Recursive item solver** — Explores all valid crafting paths from held components and returns concrete slam recommendations.
-* **Partial-state placement prediction** — Trains on synthetic mid-game boards to estimate expected placement from incomplete information.
-* **High-ELO bias** — Data is sourced from Challenger-level ranked play.
+```python
+from analyzer import BoardFinder
+BoardFinder().print_good_boards()
+```
 
 ---
 
 ## Tech Stack
 
 * **Language:** Python 3.x
-* **Machine Learning:** PyTorch (neural networks), Scikit-Learn (K-Means), NumPy
-* **Data Processing:** JSON, PyTorch tensors
-* **Networking:** Requests (Riot Games API)
+* **ML:** PyTorch, scikit-learn (K-Means), NumPy
+* **Data:** Riot TFT API, Community Dragon JSON
+* **Networking:** Requests
 
 ---
 
 ## Status & Roadmap
 
-* Live data scraping and preprocessing
-* Unsupervised meta discovery with enriched cluster profiles
-* Item-aware, economy-aware recommendation engine
-* Recursive item crafting solver
-* Placement prediction with context features and partial-state training
-* Future work:
-  * Making items vs waiting for better components
-  * Real-time in-game assistant integration
-  * User interface
-  * Stronger partial-state labels from manual/OCR game capture
+* Live Challenger scrape + Set 18 preprocessing (traits, counts, DA_* items)
+* Trait-aware unsupervised meta discovery with emblem / unique / display-name labeling
+* Item-first, economy-aware recommendation + craft solver
+* Placement prediction with trait context and synthetic partials
+* Future ideas:
+  * Make-vs-wait component decisions
+  * Real-time in-game assistant / UI
+  * Stronger mid-game labels (manual capture / OCR) instead of synthetic partials
+  * Wisps / augments if Riot exposes them
 
 ---
 
 ## Disclaimer
 
 This project is **not affiliated with or endorsed by Riot Games**.
-All game data is accessed via the official Riot API and used for educational and analytical purposes.
+All game data is accessed via the official Riot API and Community Dragon for educational and analytical purposes.
 
 ---
 
