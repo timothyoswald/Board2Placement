@@ -49,9 +49,9 @@ When recommending a direction for *your* board, each cluster is scored as:
 
 | Signal | Weight | Meaning |
 |--------|--------|---------|
-| Item fit (+ craftable slams) | 45% | Your completed / craftable items match what that archetype slamms |
-| Unit fit | 25% | Cosine similarity of your units+traits to the cluster centroid |
-| Economy fit | 20% | Level / gold / stage can realistically reach the archetype’s cost profile |
+| Item fit (+ craftable slams) | 50% | Your completed / craftable items match what that archetype slamms |
+| Economy fit | 30% | Level / gold / stage can realistically reach the archetype’s cost profile |
+| Unit fit | 10% | Cosine similarity of your units+traits to the cluster centroid |
 | Transition cost | 10% | How many important core units you are still missing (inverted) |
 
 Feasibility labels map economy + transition into `easy` / `medium` / `greedy` / `unrealistic`.
@@ -97,9 +97,9 @@ A live `recommend()` call returns a `CompRecommendation` with score breakdowns, 
 
 ### Placement model (`model.py` / `train.py` / `evaluate.py`)
 * Per-slot unit + item embeddings, masked mean over occupied slots
-* Economy context (stage, level, gold) + trait style vector
+* Economy context: 5-D `[stage, round, progress, level, gold]` (normalized) using the ranked round calendar
 * Predicts placement as regression **or** 8-way distribution (default)
-* Trains on final boards **plus** synthetic mid-game partials (`partial_data.py`)
+* Trains on final boards **plus** synthetic mid-game partials keyed to stage-round (`partial_data.py`)
 * Metrics: MAE, top-4 accuracy, exact placement accuracy
 
 ### Orchestration
@@ -110,6 +110,42 @@ A live `recommend()` call returns a `CompRecommendation` with score breakdowns, 
 * Wisps (Set 18 shop mechanic)
 * Reliable augments (often missing)
 * Hex positions / positioning
+
+---
+
+## Placement context (5-D) and round calendar
+
+Live and training context is no longer `[stage, level, gold]`. It is a **normalized 5-vector**:
+
+`[stage/7, round/7, progress, level/10, min(gold,100)/100]`
+
+built from a ranked round calendar (stage 1 = four PvE rounds; stages 2–7 = seven rounds each; `progress = abs_round / 46`). Riot `last_round` maps onto that calendar (e.g. `34 → 6-2`). Pass a live clock as `stage`+`round` or `stage_round="3-2"`.
+
+**Final match snapshots** are encoded at a canonical **6-2** clock. `last_round` is elimination time (8ths die around 4-x, 1sts around 6-x), so using it as the live clock leaks placement into the features. Mid-game diversity comes from synthetic 2-1…5-7 partials, which also mask units by **stage-round cost caps** (3-1 ≠ 3-6).
+
+### Comparison vs previous 3-D model
+
+Same Challenger dump, same 64,096-sample mix (finals + 3 partials/board), same eval protocol (full mix, 8-way head):
+
+| | 3-D `[stage, level, gold]` | 5-D calendar (shipped) |
+|--|----------------------------|-------------------------|
+| MAE | 1.650 | **1.128** |
+| Top-4 accuracy | 0.705 | **0.804** |
+| Exact placement accuracy | 0.271 | **0.394** |
+
+Validation during the 5-D retrain (held-out 20% of the mix): MAE **1.28**, top-4 **0.765**.
+
+**Same-board probes** (Kayle / Sejuani / Leona / Ornn / Sett / Malphite / Rakan / Xayah, 2★, items on Kayle/Xayah/Sett):
+
+| Clock | Old 3-D expected | New 5-D expected |
+|-------|------------------|------------------|
+| Stage 3 / 3-1, level 8, 50g (capped, out of distribution) | 7.75 | **5.15** |
+| 3-1, level 6, 20g | 7.76 | **5.22** |
+| 6-2, level 9, 10g | 7.73 | 7.37 |
+
+That mash-up still does not look like a Challenger-winning endboard to the net. A **real 1st-place** board from the dump scores about **1.3–1.9** across 3-1…6-2; a **real 8th-place** board scores about **6.2–7.9**. Clock now moves predictions, but **board quality dominates** once death-time leakage is removed.
+
+An earlier 5-D experiment that fed Riot `last_round` on finals looked even stronger on 6-2 (~4.0 on the mash-up) because late clocks ≈ winners. That version was discarded.
 
 ---
 
@@ -129,8 +165,8 @@ A live `recommend()` call returns a `CompRecommendation` with score breakdowns, 
 |------|---------|
 | [`dataScraper.py`](dataScraper.py) | Challenger-seeded match scrape → `data/patch*/`. |
 | [`filterData.py`](filterData.py) | Raw JSON → vocab + tensors `(board, context, traits, trait_counts, placement)`. |
-| [`state.py`](state.py) | `GameState`, parsers, trait encoding, cosine helpers. |
-| [`partial_data.py`](partial_data.py) | Synthetic Stage 2–5 boards for placement training. |
+| [`state.py`](state.py) | `GameState`, ranked round calendar, parsers, trait encoding, cosine helpers. |
+| [`partial_data.py`](partial_data.py) | Synthetic 2-1…5-7 boards for placement training. |
 | [`build_champion_map.py`](build_champion_map.py) | Community Dragon → `data/championTraits.json`. |
 | [`gen_component_data.py`](gen_component_data.py) | Community Dragon → `componentData.py` recipes. |
 
@@ -188,7 +224,7 @@ gs = game_state_from_names(
         "DA_Component_NeedlesslyLargeRod": 1,
     },
     ids_file=finder.ids_file,
-    stage=3.0,
+    stage_round="3-2",
     level=6.0,
     gold=20.0,
 )
@@ -239,8 +275,9 @@ After retraining, commit the four inference artifacts again so clones stay usabl
 * Live Challenger scrape + Set 18 preprocessing (traits, counts, DA_* items)
 * Trait-aware unsupervised meta discovery with emblem / unique / display-name labeling
 * Item-first, economy-aware recommendation + craft solver
-* Placement prediction with trait context and synthetic partials
+* Placement prediction with 5-D stage-round context and synthetic 2-1…5-7 partials
 * Future ideas:
+  * Joint (level, gold) sampling and trait-preserving filler swaps on synthetic boards
   * Make-vs-wait component decisions
   * Real-time in-game assistant / UI
   * Stronger mid-game labels (manual capture / OCR) instead of synthetic partials

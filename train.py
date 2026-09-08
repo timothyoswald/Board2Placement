@@ -4,6 +4,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from model import Board2Placement
 from settings import CLEANED_DIR, CLEANED_PARTIAL_DIR, PLACEMENT_MODEL_PATH
+from state import CONTEXT_FEATURES
 
 batchSize = 32
 learningRate = 0.001
@@ -20,7 +21,7 @@ def load_dataset(path: str):
     first = data[0]
     if len(first) == 2:
         boards = torch.stack([x[0] for x in data])
-        contexts = torch.zeros(len(data), 3)
+        contexts = torch.zeros(len(data), CONTEXT_FEATURES)
         traits = torch.zeros(len(data), 1)
         targets = torch.stack([x[1] for x in data])
     elif len(first) == 3:

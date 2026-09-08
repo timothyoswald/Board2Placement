@@ -19,6 +19,7 @@ from settings import (
     TRAIT_WEIGHT_IN_CLUSTER,
 )
 from state import (
+    CONTEXT_FEATURES,
     GameState,
     cosine_similarity,
     game_state_from_names,
@@ -32,9 +33,9 @@ modelDir = BOARD_FINDER_PATH
 clusterCount = CLUSTER_COUNT
 
 # Comp matching weights (items weighted highest per plan)
-WEIGHT_ITEM_FIT = 0.45
-WEIGHT_UNIT_FIT = 0.25
-WEIGHT_ECONOMY = 0.20
+WEIGHT_ITEM_FIT = 0.50
+WEIGHT_UNIT_FIT = 0.10
+WEIGHT_ECONOMY = 0.30
 WEIGHT_TRANSITION = 0.10
 
 # Unit must appear on at least this fraction of cluster boards to be a "carry core"
@@ -237,6 +238,7 @@ class BoardFinder:
         projected = GameState(
             board=game_state.board.clone(),
             stage=game_state.stage,
+            round=game_state.round,
             level=max(game_state.level, self.cluster_profiles[cluster_idx].required_level),
             gold=game_state.gold,
             components=game_state.components.copy(),
@@ -276,7 +278,7 @@ class BoardFinder:
             counts = torch.zeros(self.num_traits)
             if len(entry) == 2:
                 board_tensor, placement_tensor = entry
-                context = torch.tensor([4.0, 8.0, 0.0])
+                context = torch.zeros(CONTEXT_FEATURES)
                 traits = torch.zeros(self.num_traits)
             elif len(entry) == 3:
                 board_tensor, context, placement_tensor = entry
@@ -890,8 +892,10 @@ class BoardFinder:
         current_board: List[str],
         curr_items: dict,
         stage: float = 3.0,
+        round: float = 1.0,
         level: float = 6.0,
         gold: float = 20.0,
+        stage_round: Optional[str] = None,
     ) -> Tuple[int, List[str], List[dict], CompRecommendation]:
         """Backward-compatible API; returns best cluster recommendation."""
         game_state = game_state_from_names(
@@ -899,8 +903,10 @@ class BoardFinder:
             curr_items,
             self.ids_file,
             stage=stage,
+            round=round,
             level=level,
             gold=gold,
+            stage_round=stage_round,
         )
         best = self.recommend(game_state, top_k=1)[0]
         return (

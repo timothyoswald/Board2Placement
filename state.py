@@ -16,7 +16,107 @@ from settings import CHAMPION_MAP_PATH, IDS_PATH
 
 BOARD_SLOTS = 14
 UNIT_FEATURES = 6  # unitID, cost, star, item1, item2, item3
-CONTEXT_FEATURES = 3  # stage, level, gold
+# Normalized [stage/7, round/7, progress, level/10, gold/100]
+CONTEXT_FEATURES = 5
+
+# Ranked TFT calendar: stage 1 is PvE-only (1-1..1-4); stages 2-7 are x-1..x-7.
+ROUNDS_PER_STAGE = {1: 4, 2: 7, 3: 7, 4: 7, 5: 7, 6: 7, 7: 7}
+STAGE1_LENGTH = 4
+MAX_STAGE = 7
+CALENDAR_LENGTH = STAGE1_LENGTH + 7 * 6  # 46
+CONTEXT_STAGE_SCALE = 7.0
+CONTEXT_ROUND_SCALE = 7.0
+CONTEXT_LEVEL_SCALE = 10.0
+CONTEXT_GOLD_CAP = 100.0
+
+
+def clamp_stage_round(stage: int | float, round_num: int | float) -> Tuple[int, int]:
+    stage_i = max(1, min(MAX_STAGE, int(stage)))
+    max_r = ROUNDS_PER_STAGE[stage_i]
+    round_i = max(1, min(max_r, int(round_num)))
+    return stage_i, round_i
+
+
+def parse_stage_round_label(label: str) -> Tuple[int, int]:
+    """Parse '3-2' / '3-2 ' into (stage, round)."""
+    text = (label or "").strip().replace(" ", "")
+    parts = text.replace("/", "-").split("-")
+    if len(parts) != 2:
+        raise ValueError(f"expected stage-round like '3-2', got {label!r}")
+    return clamp_stage_round(int(parts[0]), int(parts[1]))
+
+
+def last_round_to_stage_round(last_round: int | float) -> Tuple[int, int]:
+    """Map Riot last_round onto the ranked calendar (stage 1 = 4 rounds)."""
+    n = max(1, int(last_round))
+    if n <= STAGE1_LENGTH:
+        return 1, min(n, STAGE1_LENGTH)
+    rem = n - STAGE1_LENGTH
+    stage = 2 + (rem - 1) // 7
+    rnd = 1 + (rem - 1) % 7
+    if stage > MAX_STAGE:
+        return MAX_STAGE, ROUNDS_PER_STAGE[MAX_STAGE]
+    return stage, rnd
+
+
+def stage_round_to_abs_round(stage: int | float, round_num: int | float) -> int:
+    stage_i, round_i = clamp_stage_round(stage, round_num)
+    prior = sum(ROUNDS_PER_STAGE[s] for s in range(1, stage_i))
+    return prior + round_i
+
+
+def game_progress(stage: int | float, round_num: int | float) -> float:
+    return stage_round_to_abs_round(stage, round_num) / float(CALENDAR_LENGTH)
+
+
+def midgame_stage_rounds() -> List[Tuple[int, int]]:
+    """Synthetic training window: 2-1 through 5-7."""
+    out: List[Tuple[int, int]] = []
+    for stage in range(2, 6):
+        for rnd in range(1, ROUNDS_PER_STAGE[stage] + 1):
+            out.append((stage, rnd))
+    return out
+
+
+def max_cost_visible(stage: int | float, round_num: int | float) -> int:
+    """Highest unit cost typically on board at this clock (shop / tempo)."""
+    abs_r = stage_round_to_abs_round(stage, round_num)
+    if abs_r <= 7:  # through 2-3
+        return 3
+    if abs_r <= 18:  # through 3-7
+        return 4
+    return 5
+
+
+def build_context_tensor(
+    stage: float,
+    round_num: float,
+    level: float,
+    gold: float,
+) -> torch.Tensor:
+    """Normalized 5-D context: [stage/7, round/7, progress, level/10, gold/100]."""
+    stage_i, round_i = clamp_stage_round(stage, round_num)
+    progress = game_progress(stage_i, round_i)
+    gold_n = min(max(float(gold), 0.0), CONTEXT_GOLD_CAP) / CONTEXT_GOLD_CAP
+    return torch.tensor(
+        [
+            stage_i / CONTEXT_STAGE_SCALE,
+            round_i / CONTEXT_ROUND_SCALE,
+            progress,
+            float(level) / CONTEXT_LEVEL_SCALE,
+            gold_n,
+        ],
+        dtype=torch.float32,
+    )
+
+
+def context_from_last_round(
+    last_round: int | float,
+    level: float,
+    gold: float,
+) -> Tuple[torch.Tensor, int, int]:
+    stage, rnd = last_round_to_stage_round(last_round)
+    return build_context_tensor(stage, rnd, level, gold), stage, rnd
 
 
 @dataclass
@@ -25,13 +125,14 @@ class GameState:
 
     board: torch.Tensor  # shape [14, 6], long
     stage: float = 4.0
+    round: float = 1.0
     level: float = 8.0
     gold: float = 30.0
     components: Dict[str, int] = field(default_factory=dict)
     traits: torch.Tensor = field(default_factory=lambda: torch.zeros(0, dtype=torch.float32))
 
     def context_tensor(self) -> torch.Tensor:
-        return torch.tensor([self.stage, self.level, self.gold], dtype=torch.float32)
+        return build_context_tensor(self.stage, self.round, self.level, self.gold)
 
     def trait_tensor(self) -> torch.Tensor:
         return self.traits
@@ -340,20 +441,30 @@ def game_state_from_names(
     components: Dict[str, int],
     ids_file: dict,
     stage: float = 3.0,
+    round: float = 1.0,
     level: float = 6.0,
     gold: float = 20.0,
     items_by_unit: Optional[Dict[str, List[str]]] = None,
     champ_map: Optional[dict] = None,
+    stage_round: Optional[str] = None,
 ) -> GameState:
+    if stage_round:
+        stage, round = parse_stage_round_label(stage_round)
     board = board_from_unit_names(unit_names, ids_file, items_by_unit=items_by_unit)
     trait_ids = ids_file.get("traitIDs", {"reserve": 0})
     id_to_name = {v: k for k, v in ids_file["unitIDs"].items()}
     if champ_map is None:
         champ_map = load_champion_trait_map()
+    for idx, name in enumerate(unit_names[:BOARD_SLOTS]):
+        info = champ_map.get(name) or {}
+        cost = info.get("cost")
+        if cost:
+            board[idx, 1] = int(cost)
     traits = recompute_traits_from_board(board, id_to_name, trait_ids, champ_map)
     return GameState(
         board=board,
-        stage=stage,
+        stage=float(stage),
+        round=float(round),
         level=level,
         gold=gold,
         components=components,
@@ -405,14 +516,22 @@ def parse_player_board(
     return torch.tensor(board_rows[:BOARD_SLOTS], dtype=torch.long)
 
 
+FINAL_BOARD_STAGE = 6
+FINAL_BOARD_ROUND = 2
+
+
 def parse_player_context(player: dict) -> torch.Tensor:
-    """Extract stage/level/gold from participant JSON."""
+    """
+    Extract 5-D context from a final-board participant JSON.
+
+    Riot last_round is elimination time and would leak placement if used as
+    the live clock (8ths die around 4-x, 1sts around 6-x). Final snapshots
+    are therefore encoded at a canonical late-game round; synthetic partials
+    supply mid-game (stage, round) diversity.
+    """
     level = float(player.get("level", 8))
     gold = float(player.get("gold_left", 0))
-    last_round = player.get("last_round", 30)
-    # Approximate stage from round number (4 rounds per stage in standard TFT)
-    stage = max(1.0, min(7.0, last_round / 4.0))
-    return torch.tensor([stage, level, gold], dtype=torch.float32)
+    return build_context_tensor(FINAL_BOARD_STAGE, FINAL_BOARD_ROUND, level, gold)
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:

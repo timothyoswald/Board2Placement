@@ -14,7 +14,10 @@ from settings import CHAMPION_MAP_PATH
 from state import (
     BOARD_SLOTS,
     UNIT_FEATURES,
+    build_context_tensor,
     load_champion_trait_map,
+    max_cost_visible,
+    midgame_stage_rounds,
     recompute_traits_from_board,
 )
 
@@ -29,7 +32,8 @@ def _name_to_item_id(name: str, item_ids: dict) -> int:
 
 def mask_board_partial(
     board: torch.Tensor,
-    stage: float,
+    stage: int,
+    round_num: int,
     id_to_item: dict,
     item_ids: dict,
     rng: random.Random,
@@ -41,11 +45,7 @@ def mask_board_partial(
     """
     partial = board.clone()
     components: dict = {}
-
-    # Stage-based cost threshold: early game hides expensive units
-    cost_by_stage = {1: 5, 2: 4, 3: 4, 4: 3, 5: 3, 6: 2, 7: 1}
-    stage_int = max(1, min(7, int(stage)))
-    max_cost_visible = cost_by_stage.get(stage_int, 3)
+    cap = max_cost_visible(stage, round_num)
 
     for i in range(BOARD_SLOTS):
         unit_id = int(partial[i, 0].item())
@@ -55,13 +55,17 @@ def mask_board_partial(
         cost = int(partial[i, 1].item())
         star = int(partial[i, 2].item())
 
-        # Remove units above stage-appropriate cost with some randomness
-        if cost > max_cost_visible and rng.random() < 0.7:
+        # Remove units above the stage-round cost cap with some randomness
+        if cost > cap and rng.random() < 0.7:
+            partial[i] = torch.zeros(UNIT_FEATURES, dtype=torch.long)
+            continue
+        # 5-costs stay rare until stage 4
+        if cost >= 5 and cap < 5 and rng.random() < 0.85:
             partial[i] = torch.zeros(UNIT_FEATURES, dtype=torch.long)
             continue
 
-        # Down-star higher star units in early stages
-        if stage_int <= 4 and star > 1 and rng.random() < 0.5:
+        # Down-star higher star units in early/mid game
+        if stage <= 4 and star > 1 and rng.random() < 0.5:
             partial[i, 2] = max(1, star - 1)
 
         # Convert completed items back to components
@@ -80,14 +84,22 @@ def mask_board_partial(
     return partial, components
 
 
-def sample_economy(stage: float, rng: random.Random) -> Tuple[float, float]:
-    """Sample plausible level and gold for a given stage."""
-    stage_int = max(1, min(7, int(stage)))
+def sample_economy(stage: int, round_num: int, rng: random.Random) -> Tuple[float, float]:
+    """Sample plausible level and gold for a given stage-round."""
     level_ranges = {
-        1: (2, 4), 2: (3, 5), 3: (5, 7), 4: (6, 9),
-        5: (7, 10), 6: (8, 10), 7: (8, 10),
+        1: (2, 4),
+        2: (3, 5),
+        3: (5, 7),
+        4: (6, 9),
+        5: (7, 10),
+        6: (8, 10),
+        7: (8, 10),
     }
-    lo, hi = level_ranges.get(stage_int, (6, 8))
+    lo, hi = level_ranges.get(stage, (6, 8))
+    if round_num >= 5:
+        lo = min(lo + 1, hi)
+    if round_num <= 2:
+        hi = max(lo, hi - 1)
     level = float(rng.randint(lo, hi))
     gold = float(rng.choice([0, 10, 20, 30, 40, 50]))
     return level, gold
@@ -104,7 +116,7 @@ def generate_partial_samples(
 ) -> List[Tuple]:
     """
     From final-board dataset entries (board, context, traits[, counts], placement),
-    generate synthetic partial states with recomputed traits.
+    generate synthetic partial states with recomputed traits and 5-D context.
     """
     rng = random.Random(seed)
     partial_data = []
@@ -112,6 +124,7 @@ def generate_partial_samples(
     id_to_name = {v: k for k, v in (unit_ids or {}).items()} if unit_ids else {}
     trait_ids = trait_ids or {"reserve": 0}
     num_traits = len(trait_ids)
+    clocks = midgame_stage_rounds()
 
     for entry in dataset:
         if len(entry) == 5:
@@ -124,12 +137,12 @@ def generate_partial_samples(
             board, placement = entry
 
         for _ in range(samples_per_board):
-            stage = float(rng.randint(2, 5))
-            level, gold = sample_economy(stage, rng)
+            stage, round_num = rng.choice(clocks)
+            level, gold = sample_economy(stage, round_num, rng)
             partial_board, _components = mask_board_partial(
-                board, stage, id_to_item, item_ids, rng
+                board, stage, round_num, id_to_item, item_ids, rng
             )
-            context = torch.tensor([stage, level, gold], dtype=torch.float32)
+            context = build_context_tensor(stage, round_num, level, gold)
             if id_to_name and champ_map:
                 traits = recompute_traits_from_board(
                     partial_board, id_to_name, trait_ids, champ_map

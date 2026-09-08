@@ -4,8 +4,7 @@ data/patch*/
 data/cleaned*
 data/rawMatches/
 data/trueData
-scraperState*.json
-component_gen_preview.txt
+board2placement_legacy3d.pth
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

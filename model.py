@@ -54,7 +54,7 @@ class Board2Placement(nn.Module):
     def forward(self, board, context, traits=None):
         """
         board: [batch, 14, 6]
-        context: [batch, 3] stage, level, gold
+        context: [batch, 5] normalized stage, round, progress, level, gold
         traits: [batch, num_traits] style/4 encodings (optional for back-compat)
         """
         unitIDs = board[:, :, 0]
